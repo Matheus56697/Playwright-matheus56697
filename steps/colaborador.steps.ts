@@ -51,7 +51,7 @@ When(
   async () => {
 
     await colaboradorPage
-      .salvarColaborador();
+      .salvarColaborador(colaborador);
   }
 );
 
@@ -60,7 +60,7 @@ When(
   async () => {
 
     await colaboradorPage
-      .salvarColaborador();
+      .salvarColaborador(colaborador);
   }
 );
 

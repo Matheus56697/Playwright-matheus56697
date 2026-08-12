@@ -21,16 +21,10 @@ export class ColaboradorFactory {
 
   static gerarMatricula(): string {
 
-    const sufixo =
-      String(Date.now()).slice(-4);
-
-    const aleatorio =
-      faker.number.int({
-        min: 0,
-        max: 9
-      });
-
-    return `${sufixo.slice(0, 3)}${aleatorio}`;
+    return faker.number.int({
+      min: 1000,
+      max: 9999
+    }).toString();
   }
 
   static gerarPin(): string {

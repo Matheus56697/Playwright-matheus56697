@@ -2,7 +2,10 @@ import { Locator, Page, expect } from '@playwright/test';
 
 import { BasePage } from './BasePage';
 
-import { Colaborador } from '../utils/factories/ColaboradorFactory';
+import {
+  Colaborador,
+  ColaboradorFactory
+} from '../utils/factories/ColaboradorFactory';
 
 export class ColaboradorPage extends BasePage {
 
@@ -287,7 +290,7 @@ export class ColaboradorPage extends BasePage {
       .last();
   }
 
-  async salvarColaborador() {
+  private async prepararBotaoCadastrar() {
 
     await expect(
       this.campo('input[name="employee-name"]')
@@ -312,28 +315,357 @@ export class ColaboradorPage extends BasePage {
       this.pausaFormularioMs
     );
 
-    await botaoCadastrar.click();
+    return botaoCadastrar;
+  }
 
-    await this.page.waitForURL(
-      /\/employees(?!\/create)/,
-      { timeout: 90000 }
-    ).catch(async () => {
+  private seletoresErrosValidacao(): string {
 
-      await expect(
-        this.page.getByText(
-          /cadastrado|salvo|sucesso|criado com sucesso/i
-        )
-      ).toBeVisible({
-        timeout: 30000
-      });
-    });
+    return [
+      '.alert-danger',
+      '.text-danger',
+      '.invalid-feedback',
+      '.help-block',
+      '[role="alert"]',
+      '.toast-body',
+      '.swal2-html-container',
+      '.swal2-content'
+    ].join(', ');
+  }
 
-    await this.page.waitForLoadState(
-      'domcontentloaded'
+  private async obterTextoErrosValidacao(): Promise<string> {
+
+    const errosValidacao = this.page.locator(
+      this.seletoresErrosValidacao()
+    ).filter({ hasText: /.+/ });
+
+    return (await errosValidacao.allTextContents())
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .join(' | ');
+  }
+
+  private textoIndicaMatriculaDuplicada(
+    texto: string
+  ): boolean {
+
+    if (!texto) {
+      return false;
+    }
+
+    const normalizado = texto.toLowerCase();
+
+    if (
+      /matr[ií]cula|enrollment|employee-enrollment|employee_enrollment/
+        .test(normalizado)
+      && /j[aá]|exist|cadastrad|utilizad|em uso|duplicad|informad|taken|unique|[uú]nic|repetid|mesma|already/
+        .test(normalizado)
+    ) {
+      return true;
+    }
+
+    return /matr[ií]cula.*(j[aá]|exist|cadastrad|utilizad|em uso|duplicad|informad)/i
+      .test(texto)
+      || /(j[aá]|exist|cadastrad|utilizad|em uso|duplicad|informad).*matr[ií]cula/i
+        .test(texto);
+  }
+
+  private textoIndicaCpfOuEmailDuplicado(
+    texto: string
+  ): boolean {
+
+    if (!texto) {
+      return false;
+    }
+
+    const normalizado = texto.toLowerCase();
+
+    return (
+      /cpf|e-?mail|email/.test(normalizado)
+      && /j[aá]|exist|cadastrad|utilizad|em uso|duplicad|informad|taken|unique|[uú]nic|already/
+        .test(normalizado)
+    );
+  }
+
+  private async campoMatriculaInvalido(): Promise<boolean> {
+
+    const campoMatricula =
+      this.campo('input[name="employee-enrollment"]');
+
+    return campoMatricula.evaluate((el) => (
+      el.classList.contains('is-invalid')
+      || el.getAttribute('aria-invalid') === 'true'
+    )).catch(() => false);
+  }
+
+  private async erroMatriculaDuplicadaNaPagina(): Promise<boolean> {
+
+    if (await this.campoMatriculaInvalido()) {
+      return true;
+    }
+
+    const textoErros =
+      await this.obterTextoErrosValidacao();
+
+    if (this.textoIndicaMatriculaDuplicada(textoErros)) {
+      return true;
+    }
+
+    const textosEnrollment = await this.page
+      .locator(
+        '[name="employee-enrollment"] ~ .invalid-feedback, ' +
+        '[name="employee-enrollment"] + .invalid-feedback, ' +
+        '[name="employee-enrollment"] ~ .text-danger, ' +
+        'input[name="employee-enrollment"] ~ small'
+      )
+      .allTextContents()
+      .catch(() => [] as string[]);
+
+    return textosEnrollment.some((texto) =>
+      this.textoIndicaMatriculaDuplicada(texto.trim())
+    );
+  }
+
+  private respostaIndicaMatriculaDuplicada(
+    corpoResposta: string
+  ): boolean {
+
+    if (!corpoResposta) {
+      return false;
+    }
+
+    if (this.textoIndicaMatriculaDuplicada(corpoResposta)) {
+      return true;
+    }
+
+    const normalizado = corpoResposta.toLowerCase();
+
+    return (
+      /employee-enrollment|employee_enrollment|"enrollment"/
+        .test(normalizado)
+      && /unique|taken|duplicat|already|exist|cadastrad/
+        .test(normalizado)
+    );
+  }
+
+  private async cadastroSalvoComSucesso(): Promise<boolean> {
+
+    const url = this.page.url();
+
+    if (/\/employees\/\d+/.test(url)) {
+      return true;
+    }
+
+    if (/\/employees\/?$/.test(url)) {
+      return true;
+    }
+
+    return this.page
+      .getByText(
+        /cadastrado|salvo|sucesso|criado com sucesso/i
+      )
+      .isVisible({ timeout: 3000 })
+      .catch(() => false);
+  }
+
+  private async aguardarResultadoCadastro(
+    corpoResposta?: string
+  ): Promise<
+    'sucesso' | 'matricula_duplicada' | 'falha'
+  > {
+
+    if (
+      corpoResposta
+      && this.respostaIndicaMatriculaDuplicada(corpoResposta)
+    ) {
+      return 'matricula_duplicada';
+    }
+
+    const limite = Date.now() + 35000;
+
+    while (Date.now() < limite) {
+
+      if (await this.cadastroSalvoComSucesso()) {
+        return 'sucesso';
+      }
+
+      if (this.page.url().includes('/employees/create')) {
+
+        if (await this.erroMatriculaDuplicadaNaPagina()) {
+          return 'matricula_duplicada';
+        }
+      }
+
+      await this.page.waitForTimeout(500);
+    }
+
+    if (await this.cadastroSalvoComSucesso()) {
+      return 'sucesso';
+    }
+
+    if (
+      this.page.url().includes('/employees/create')
+      && await this.erroMatriculaDuplicadaNaPagina()
+    ) {
+      return 'matricula_duplicada';
+    }
+
+    return 'falha';
+  }
+
+  private async deveRetentarComNovaMatricula(): Promise<boolean> {
+
+    if (!this.page.url().includes('/employees/create')) {
+      return false;
+    }
+
+    if (await this.erroMatriculaDuplicadaNaPagina()) {
+      return true;
+    }
+
+    const textoErros =
+      await this.obterTextoErrosValidacao();
+
+    if (this.textoIndicaCpfOuEmailDuplicado(textoErros)) {
+      return false;
+    }
+
+    if (this.textoIndicaMatriculaDuplicada(textoErros)) {
+      return true;
+    }
+
+    // CPF e e-mail são únicos no teste; permanecer no create indica matrícula duplicada.
+    return !textoErros.trim();
+  }
+
+  private async atualizarMatricula(
+    matricula: string
+  ) {
+
+    await this.preencherCampo(
+      this.campo('input[name="employee-enrollment"]'),
+      matricula,
+      { digitarDevagar: true }
     );
 
-    await this.screenshot(
-      'colaborador-salvo'
+    await this.page.waitForTimeout(
+      this.pausaFormularioMs
+    );
+  }
+
+  private async clicarCadastrarEAguardar(): Promise<
+    'sucesso' | 'matricula_duplicada' | 'falha'
+  > {
+
+    const botaoCadastrar =
+      await this.prepararBotaoCadastrar();
+
+    const respostaPromise = this.page
+      .waitForResponse(
+        (resp) => {
+          const url = resp.url().toLowerCase();
+          const metodo = resp.request().method();
+
+          return (
+            (url.includes('/employees') || url.includes('/employee'))
+            && ['POST', 'PUT', 'PATCH'].includes(metodo)
+          );
+        },
+        { timeout: 35000 }
+      )
+      .catch(() => null);
+
+    await botaoCadastrar.click();
+
+    const resposta = await respostaPromise;
+
+    const corpoResposta = resposta
+      ? await resposta.text().catch(() => '')
+      : '';
+
+    return this.aguardarResultadoCadastro(corpoResposta);
+  }
+
+  async salvarColaborador(
+    colaborador?: Colaborador
+  ) {
+
+    const maxTentativasMatricula = 30;
+    let tentativa = 0;
+
+    while (tentativa < maxTentativasMatricula) {
+
+      tentativa++;
+
+      let resultado =
+        await this.clicarCadastrarEAguardar();
+
+      if (
+        resultado === 'falha'
+        && colaborador
+        && await this.deveRetentarComNovaMatricula()
+      ) {
+        resultado = 'matricula_duplicada';
+      }
+
+      if (resultado === 'sucesso') {
+
+        await this.page.waitForLoadState(
+          'domcontentloaded'
+        );
+
+        await this.screenshot(
+          'colaborador-salvo'
+        );
+
+        if (tentativa > 1 && colaborador) {
+
+          console.log(
+            `Cadastro concluído na tentativa ${tentativa} ` +
+            `com matrícula ${colaborador.matricula}`
+          );
+        }
+
+        return;
+      }
+
+      if (
+        resultado === 'matricula_duplicada'
+        && colaborador
+      ) {
+
+        const novaMatricula =
+          ColaboradorFactory.gerarMatricula();
+
+        console.log(
+          `Matrícula ${colaborador.matricula} já existe. ` +
+          `Tentando ${novaMatricula} (tentativa ${tentativa}/${maxTentativasMatricula})`
+        );
+
+        colaborador.matricula = novaMatricula;
+
+        await this.atualizarMatricula(novaMatricula);
+
+        await this.screenshot(
+          `matricula-duplicada-tentativa-${tentativa}`
+        );
+
+        continue;
+      }
+
+      const textoErros =
+        await this.obterTextoErrosValidacao();
+
+      throw new Error(
+        textoErros
+          ? `Cadastro não concluído: ${textoErros}`
+          : `Cadastro não concluído após ${tentativa} tentativa(s). ` +
+            'Verifique CPF, matrícula ou e-mail duplicados.'
+      );
+    }
+
+    throw new Error(
+      `Cadastro não concluído após ${maxTentativasMatricula} tentativas ` +
+      `de matrícula${colaborador ? ` (última: ${colaborador.matricula})` : ''}.`
     );
   }
 
